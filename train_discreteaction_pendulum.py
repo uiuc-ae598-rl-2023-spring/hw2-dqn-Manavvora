@@ -15,8 +15,8 @@ class NeuralNet(nn.Module):
         self.fc2 = nn.Linear(hidden_size, hidden_size)
         self.fc3 = nn.Linear(hidden_size, output_size)
         self.tanh = nn.Tanh()
-        self.optimizer = optim.RMSprop(self.parameters(), lr=learning_rate)
-        self.loss = nn.MSELoss()
+        # self.optimizer = optim.RMSprop(self.parameters(), lr=learning_rate)
+        # self.loss = nn.MSELoss()
         self.float()
 
     def forward(self, x):
@@ -35,14 +35,17 @@ class DQN_agent:
         self.learning_rate = learning_rate
         self.evaluate_net = self.qnetwork()
         self.target_net = self.qnetwork()
-        self.epsilon = epsilon
-        self.epsilon_min = 1
+        self.epsilon_initial = epsilon
+        self.epsilon = self.epsilon_initial
+        self.epsilon_min = 0.1
         self.epsilon_decay = 0.995
         self.num_episodes = num_episodes
         self.gamma = gamma
+        self.loss = torch.nn.MSELoss()
+        self.optimizer = optim.RMSprop(self.evaluate_net.parameters(), lr=learning_rate)
         self.replay_buffer = replay_buffer
         self.learn_step_counter = 0
-        self.target_replace_freq = 1000
+        self.target_replace_freq = 10
         self.memory = deque(maxlen = self.replay_buffer) #each element of the memory is [s,a,r,s',done]
         self.log = {
         't': [0],
@@ -63,7 +66,7 @@ class DQN_agent:
     def epsilon_greedy(self, s):
         if np.random.rand() <= self.epsilon:
             return random.randrange(self.env.num_actions)
-        q_values = self.qnetwork().forward(s)
+        q_values = self.evaluate_net.forward(s)
         greedy_action = torch.argmax(q_values).item()
         return greedy_action
     
@@ -73,22 +76,23 @@ class DQN_agent:
 
         experience_sample = random.sample(self.memory, batch_size)
         for s,a,r,s_new,done in experience_sample:
-            eval_output = self.evaluate_net(s)[a].item()
-            target_output = r
-            if not done:
-                q_values = self.target_net(s_new).detach()
-                target_output = r + self.gamma*(q_values.max(0)[0].item())
+            eval_output = self.evaluate_net(s)[a]
+            # target_output = r
+            # if not done:
+            q_values = self.target_net(s_new).detach()
+            target_output = r + self.gamma*(q_values.max(0)[0])
             # target_output = r + self.target_net.forward(s)
             # target_output[a] = target
             # output = self.qnetwork().forward(s)
-            loss = self.qnetwork().loss(eval_output, target_output)
+            loss = self.loss(eval_output, target_output)
 
-            self.qnetwork().optimizer.zero_grad()
+            self.optimizer.zero_grad()
             loss.backward()
-            self.qnetwork().optimizer.step()
+            self.optimizer.step()
 
         if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
+            # self.epsilon *= self.epsilon_decay
+            self.epsilon -= (self.epsilon_initial - self.epsilon_min)/self.replay_buffer
     
     def load(self, name):
         self.qnetwork().load_state_dict(name)
@@ -116,7 +120,6 @@ class DQN_agent:
                 self.store_experience(s,a,r,s_new,done)
                 s = s_new
                 if len(self.memory) > batch_size:
-                    print("HI")
                     self.experience_replay(batch_size)
             self.log['G'].append(G)
             self.log['episodes'].append(episode)
@@ -128,6 +131,7 @@ def main():
     agent = DQN_agent(env=env, learning_rate=0.001, epsilon=1.0, num_episodes=100, gamma=0.95, replay_buffer=1000)
     log = agent.DQN()
     plt.plot(log['episodes'], log['G'])
+    plt.show()
     # s = env.reset()
     # log['s'].append(s)
     # while not done:
