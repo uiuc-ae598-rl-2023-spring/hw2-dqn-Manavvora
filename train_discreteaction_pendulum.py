@@ -42,10 +42,10 @@ class DQN_agent:
         self.num_episodes = num_episodes
         self.gamma = gamma
         self.loss = torch.nn.MSELoss()
-        self.optimizer = optim.RMSprop(self.evaluate_net.parameters(), lr=learning_rate)
+        self.optimizer = optim.RMSprop(self.evaluate_net.parameters(), lr=learning_rate, alpha=0.95, eps=0.01, momentum=0.95)
         self.replay_buffer = replay_buffer
         self.learn_step_counter = 0
-        self.target_replace_freq = 10
+        self.target_replace_freq = 10000
         self.memory = deque(maxlen = self.replay_buffer) #each element of the memory is [s,a,r,s',done]
         self.log = {
         't': [0],
@@ -92,7 +92,9 @@ class DQN_agent:
 
         if self.epsilon > self.epsilon_min:
             # self.epsilon *= self.epsilon_decay
-            self.epsilon -= (self.epsilon_initial - self.epsilon_min)/self.replay_buffer
+            self.epsilon -= (self.epsilon_initial - self.epsilon_min)/10000
+        
+        return self.evaluate_net, self.target_net
     
     def load(self, name):
         self.qnetwork().load_state_dict(name)
@@ -102,6 +104,7 @@ class DQN_agent:
 
     def DQN(self):
         batch_size = 32
+        # pi = lambda s: self.env.num_actions // 2
         for episode in range(self.num_episodes):
             s = self.env.reset()
             # self.log['s'].append(s)
@@ -120,22 +123,55 @@ class DQN_agent:
                 self.store_experience(s,a,r,s_new,done)
                 s = s_new
                 if len(self.memory) > batch_size:
-                    self.experience_replay(batch_size)
+                    evaluate_net, target_net = self.experience_replay(batch_size)
+            pi = lambda s: torch.argmax(evaluate_net(s)).item()
             self.log['G'].append(G)
             self.log['episodes'].append(episode)
-            print("Episode:", episode, "Return:", G, "Epsilon:", self.epsilon)
-        return self.log
+            print("Episode:", episode+1, "Return:", G, "Epsilon:", self.epsilon)
+        return evaluate_net, pi, self.log
 
 def main():
     env = discreteaction_pendulum.Pendulum()
-    agent = DQN_agent(env=env, learning_rate=0.001, epsilon=1.0, num_episodes=100, gamma=0.95, replay_buffer=1000)
-    log = agent.DQN()
-    plt.plot(log['episodes'], log['G'])
-    plt.show()
+    agent = DQN_agent(env=env, learning_rate=0.00025, epsilon=1.0, num_episodes=1000000, gamma=0.95, replay_buffer=1000000)
+    evaluate_net, pi, log = agent.DQN()
     # s = env.reset()
-    # log['s'].append(s)
-    # while not done:
-    #     a
+    # print(pi(s))
+    s = env.reset()
+    log['s'].append(s)
+    done = False
+    opt_policy = []
+    while not done:
+        a = pi(s)
+        opt_policy.append(a)
+        (s,r,done) = env.step(a)
+        log['t'].append(log['t'][-1] + 1)
+        log['s'].append(s)
+        log['a'].append(a)
+        log['r'].append(r)
+    print(opt_policy)
+    log['s'] = np.array(log['s'])
+    theta = log['s'][:,0]
+    thetadot = log['s'][:,1]
+    tau = [env._a_to_u(a) for a in log['a']]
+    fig, ax = plt.subplots(3, 1, figsize=(10, 10))
+    ax[0].plot(log['t'], theta, label='theta')
+    ax[0].plot(log['t'], thetadot, label='thetadot')
+    ax[0].legend()
+    ax[1].plot(log['t'][:-1], tau, label='tau')
+    ax[1].legend()
+    ax[2].plot(log['t'][:-1], log['r'], label='r')
+    ax[2].legend()
+    ax[2].set_xlabel('time step')
+    plt.tight_layout()
+    plt.savefig('figures/test_discreteaction_pendulum.png')
+
+    plt.figure()
+    plt.plot(log['episodes'], log['G'])
+    plt.ylabel('Return')
+    plt.xlabel('Episodes')
+    plt.title('Learning Curve')
+    plt.savefig('figures/learning_curve.png')
+
 
 if __name__ == "__main__":
     main()
