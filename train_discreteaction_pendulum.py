@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.optim as optim
 from collections import deque
 
+
 #Neural Network for approximating Q-Function
 class NeuralNet(nn.Module):
     def __init__(self, input_size, hidden_size, output_size, learning_rate):
@@ -30,7 +31,7 @@ class NeuralNet(nn.Module):
 
 #Deep Q-Network Agent
 class DQN_agent:
-    def __init__(self, env, learning_rate, epsilon, num_episodes, gamma=0.95, replay_buffer = 2000):
+    def __init__(self, env, learning_rate, epsilon, num_episodes, target_replace_freq, batch_size, gamma=0.95, replay_buffer = 2000):
         self.env = env
         self.learning_rate = learning_rate
         self.evaluate_net = self.qnetwork()
@@ -44,8 +45,10 @@ class DQN_agent:
         self.loss = torch.nn.MSELoss()
         self.optimizer = optim.RMSprop(self.evaluate_net.parameters(), lr=learning_rate, alpha=0.95, eps=0.01, momentum=0.95)
         self.replay_buffer = replay_buffer
+        self.init_memory_size = 500
         self.learn_step_counter = 0
-        self.target_replace_freq = 10000
+        self.target_replace_freq = target_replace_freq
+        self.batch_size = batch_size
         self.memory = deque(maxlen = self.replay_buffer) #each element of the memory is [s,a,r,s',done]
         self.log = {
         't': [0],
@@ -63,18 +66,21 @@ class DQN_agent:
     def store_experience(self, s, a, r, s_new, done):
         self.memory.append((s,a,r,s_new,done))
 
-    def epsilon_greedy(self, s):
-        if np.random.rand() <= self.epsilon:
+    def epsilon_greedy(self, s, epsilon):
+        if np.random.rand() <= epsilon:
             return random.randrange(self.env.num_actions)
         q_values = self.evaluate_net.forward(s)
         greedy_action = torch.argmax(q_values).item()
         return greedy_action
     
-    def experience_replay(self, batch_size):
+    def experience_replay(self):
         if self.learn_step_counter % self.target_replace_freq == 0:
+            print("Updating Target Network")
             self.target_net.load_state_dict(self.evaluate_net.state_dict())
+        self.learn_step_counter += 1
 
-        experience_sample = random.sample(self.memory, batch_size)
+        experience_sample = random.sample(self.memory, self.batch_size)
+        # print(experience_sample[0])
         for s,a,r,s_new,done in experience_sample:
             eval_output = self.evaluate_net(s)[a]
             # target_output = r
@@ -88,6 +94,9 @@ class DQN_agent:
 
             self.optimizer.zero_grad()
             loss.backward()
+
+            for para in self.evaluate_net.parameters():
+                para.grad.data.clamp_(-1,1)
             self.optimizer.step()
 
         if self.epsilon > self.epsilon_min:
@@ -96,14 +105,14 @@ class DQN_agent:
         
         return self.evaluate_net, self.target_net
     
-    def load(self, name):
-        self.qnetwork().load_state_dict(name)
+    # def load(self, name):
+    #     self.qnetwork().load_state_dict(name)
 
-    def save(self, name):
-        self.qnetwork()._save_to_state_dict(name)
+    # def save(self, name):
+    #     self.qnetwork()._save_to_state_dict(name)
 
     def DQN(self):
-        batch_size = 32
+        # batch_size = 32
         # pi = lambda s: self.env.num_actions // 2
         for episode in range(self.num_episodes):
             s = self.env.reset()
@@ -112,27 +121,36 @@ class DQN_agent:
             iters = 0
             done = False
             while not done:
-                a = self.epsilon_greedy(s)
-                (s_new,r,done) = self.env.step(a)
-                # self.log['t'].append(self.log['t'][-1] + 1)
-                # self.log['s'].append(s_new)
-                # self.log['a'].append(a)
-                # self.log['r'].append(r)
-                iters += 1
-                G += r*self.gamma**(iters-1)
-                self.store_experience(s,a,r,s_new,done)
-                s = s_new
-                if len(self.memory) > batch_size:
-                    evaluate_net, target_net = self.experience_replay(batch_size)
+                if len(self.memory) < self.init_memory_size:
+                    a = random.randrange(self.env.num_actions)
+                    (s_new, r, done) = self.env.step(a)
+                    self.store_experience(s,a,r,s_new,done)
+                    s = s_new
+                    continue
+                else:
+                    a = self.epsilon_greedy(s, self.epsilon)
+                    (s_new,r,done) = self.env.step(a)
+                    iters += 1
+                    G += r*self.gamma**(iters-1)
+                    self.store_experience(s,a,r,s_new,done)
+                    s = s_new
+                    if len(self.memory) > self.batch_size:
+                        evaluate_net, target_net = self.experience_replay()
             pi = lambda s: torch.argmax(evaluate_net(s)).item()
             self.log['G'].append(G)
             self.log['episodes'].append(episode)
             print("Episode:", episode+1, "Return:", G, "Epsilon:", self.epsilon)
         return evaluate_net, pi, self.log
 
+
+# def wrap_pi(x):
+#     theta = ((x + np.pi) % (2 * np.pi)) - np.pi
+#     return theta
+
+
 def main():
     env = discreteaction_pendulum.Pendulum()
-    agent = DQN_agent(env=env, learning_rate=0.00025, epsilon=1.0, num_episodes=1000000, gamma=0.95, replay_buffer=1000000)
+    agent = DQN_agent(env=env, learning_rate=0.00025, epsilon=1.0, num_episodes=100, target_replace_freq=1000, batch_size=32, gamma=0.95, replay_buffer=100000)
     evaluate_net, pi, log = agent.DQN()
     # s = env.reset()
     # print(pi(s))
@@ -151,11 +169,15 @@ def main():
     print(opt_policy)
     log['s'] = np.array(log['s'])
     theta = log['s'][:,0]
+    print(theta)
     thetadot = log['s'][:,1]
     tau = [env._a_to_u(a) for a in log['a']]
     fig, ax = plt.subplots(3, 1, figsize=(10, 10))
     ax[0].plot(log['t'], theta, label='theta')
     ax[0].plot(log['t'], thetadot, label='thetadot')
+    ax[0].axhline(y=np.pi, color='r', linestyle='-', label='Theta = pi')
+    ax[0].axhline(y=-np.pi, color='r', linestyle='-', label='Theta = -pi')
+    ax[0].axhline(y = 0, color = 'r', linestyle='--', label='Theta = 0')
     ax[0].legend()
     ax[1].plot(log['t'][:-1], tau, label='tau')
     ax[1].legend()
@@ -172,7 +194,7 @@ def main():
     plt.title('Learning Curve')
     plt.savefig('figures/learning_curve.png')
 
-
+    # env.video(pi, filename='figures/test_discreteaction_pendulum.gif')
 if __name__ == "__main__":
     main()
 
