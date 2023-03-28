@@ -49,11 +49,12 @@ class DQN_agent:
         self.loss = torch.nn.MSELoss()
         self.optimizer = optim.RMSprop(self.evaluate_net.parameters(), lr=learning_rate, alpha=0.95, eps=0.01, momentum=0.95)
         self.replay_buffer = replay_buffer
+        self.memory = deque(maxlen = self.replay_buffer) #each element of the memory is [s,a,r,s',done]
         self.init_memory_size = 500
+        self.initialize_memory()
         self.learn_step_counter = 0
         self.target_replace_freq = target_replace_freq
         self.batch_size = batch_size
-        self.memory = deque(maxlen = self.replay_buffer) #each element of the memory is [s,a,r,s',done]
         self.log = {
         't': [0],
         's': [],
@@ -66,6 +67,17 @@ class DQN_agent:
     def qnetwork(self):
         model = NeuralNet(input_size = self.env.num_states, hidden_size = 64, output_size = self.env.num_actions, learning_rate = self.learning_rate)
         return model
+    
+    #Populating memory with 500 experiences generated using a random policy
+    def initialize_memory(self):
+        while len(self.memory) < self.init_memory_size:
+            s = self.env.reset()
+            done = False
+            while not done:
+                a = random.randrange(self.env.num_actions)
+                (s_new, r, done) = self.env.step(a)
+                self.store_experience(s,a,r,s_new,done)
+                s = s_new
     
     def store_experience(self, s, a, r, s_new, done):
         self.memory.append((s,a,r,s_new,done))
@@ -87,7 +99,7 @@ class DQN_agent:
         for s,a,r,s_new,done in experience_sample:
             eval_output = self.evaluate_net(s)[a]
             q_values = self.target_net(s_new).detach()
-            target_output = r + self.gamma*(q_values.max(0)[0]) #(1-done)*self.gamma*(q_values.max(0)[0])
+            target_output = r + (1-done)*self.gamma*(q_values.max(0)[0]) #(1-done)*self.gamma*(q_values.max(0)[0])
             loss = self.loss(eval_output, target_output)
 
             self.optimizer.zero_grad()
@@ -98,8 +110,10 @@ class DQN_agent:
             self.optimizer.step()
 
         if self.epsilon > self.epsilon_min:
-            self.epsilon -= (self.epsilon_initial - self.epsilon_min)/10000
-        
+            self.epsilon -= (self.epsilon_initial - self.epsilon_min)/18000
+        else:
+            self.epsilon = self.epsilon_min
+
         return self.evaluate_net, self.target_net
     
     # def load(self, name):
@@ -118,19 +132,12 @@ class DQN_agent:
             done = False
             while not done:
                 if len(self.memory) > self.batch_size:
-                    if len(self.memory) < self.init_memory_size:
-                        a = random.randrange(self.env.num_actions)
-                        (s_new, r, done) = self.env.step(a)
-                        self.store_experience(s,a,r,s_new,done)
-                        s = s_new
-                        continue
-                    else:
-                        a = self.epsilon_greedy(s, self.epsilon)
-                        (s_new,r,done) = self.env.step(a)
-                        iters += 1
-                        G += r*self.gamma**(iters-1)
-                        self.store_experience(s,a,r,s_new,done)
-                        evaluate_net, target_net = self.experience_replay()
+                    a = self.epsilon_greedy(s, self.epsilon)
+                    (s_new,r,done) = self.env.step(a)
+                    iters += 1
+                    G += r*self.gamma**(iters-1)
+                    self.store_experience(s,a,r,s_new,done)
+                    evaluate_net, target_net = self.experience_replay()
 
                 elif len(self.memory) <= self.batch_size:
                     a = self.epsilon_greedy(s, self.epsilon)
@@ -152,8 +159,8 @@ class DQN_agent:
                     self.optimizer.step()
                     if self.epsilon > self.epsilon_min:
                         # self.epsilon *= self.epsilon_decay
-                        self.epsilon -= (self.epsilon_initial - self.epsilon_min)/50000
-                
+                        self.epsilon -= (self.epsilon_initial - self.epsilon_min)/9000
+
                 s = s_new
         
             pi = lambda s: torch.argmax(evaluate_net(s)).item() #self.epsilon_greedy(s, epsilon=0.1) 
@@ -166,100 +173,102 @@ class DQN_agent:
 
 def main():
     env = discreteaction_pendulum.Pendulum()
-    # agent = DQN_agent(env=env, learning_rate=0.00025, epsilon=1.0, num_episodes=200, target_replace_freq=2000, batch_size=32, gamma=0.95, replay_buffer=100000)
-    # evaluate_net, pi, value_function, log = agent.DQN()
-    # theta = np.linspace(-np.pi, np.pi, 100)
-    # thetadot = np.linspace(-15,15,100)
-    # theta_array, thetadot_array = np.meshgrid(theta, thetadot)
-    # pi_array = np.zeros_like(theta_array)
-    # value_array = np.zeros_like(theta_array)
-    # for i in range(len(theta)):
-    #     for j in range(len(thetadot)):
-    #         s = np.array((i,j))
-    #         pi_array[i,j] = pi(s)
-    #         value_array[i,j] = value_function(s)
-    num_runs = 20
-    num_episodes = 10
-    return_multiple_runs_standard = np.zeros((num_runs,num_episodes))
-    return_multiple_runs_no_target = np.zeros((num_runs,num_episodes))
-    return_multiple_runs_no_replay = np.zeros((num_runs,num_episodes))
-    return_multiple_runs_no_replay_no_target = np.zeros((num_runs,num_episodes))
-    for i in range(num_runs):
-        agent_1 = DQN_agent(env=env, learning_rate=0.00025, epsilon=1.0, num_episodes=num_episodes, target_replace_freq=2000, batch_size=32, gamma=0.95, replay_buffer=100000)
-        evaluate_net_1, pi_1, value_function_1, log_1 = agent_1.DQN()
-        return_multiple_runs_standard[i,:] = log_1['G']
+    agent = DQN_agent(env=env, learning_rate=0.00025, epsilon=1.0, num_episodes=10, target_replace_freq=1000, batch_size=64, gamma=0.95, replay_buffer=100000)
+    evaluate_net, pi, value_function, log = agent.DQN()
+    theta = np.linspace(-np.pi, np.pi, 500)
+    thetadot = np.linspace(-15,15,500)
+    theta_array, thetadot_array = np.meshgrid(theta, thetadot)
+    pi_array = np.zeros_like(theta_array)
+    value_array = np.zeros_like(theta_array)
+    for i in range(len(theta)):
+        for j in range(len(thetadot)):
+            s = np.array((theta_array[i,j],thetadot_array[i,j]))
+            pi_array[i,j] = pi(s)
+            value_array[i,j] = value_function(s)
+    # num_runs = 20
+    # num_episodes = 10
+    # return_multiple_runs_standard = np.zeros((num_runs,num_episodes))
+    # return_multiple_runs_no_target = np.zeros((num_runs,num_episodes))
+    # return_multiple_runs_no_replay = np.zeros((num_runs,num_episodes))
+    # return_multiple_runs_no_replay_no_target = np.zeros((num_runs,num_episodes))
+    # for i in range(num_runs):
+    #     agent_1 = DQN_agent(env=env, learning_rate=0.00025, epsilon=1.0, num_episodes=num_episodes, target_replace_freq=2000, batch_size=32, gamma=0.95, replay_buffer=100000)
+    #     evaluate_net_1, pi_1, value_function_1, log_1 = agent_1.DQN()
+    #     return_multiple_runs_standard[i,:] = log_1['G']
 
-        # agent_2 = DQN_agent(env=env, learning_rate=0.00025, epsilon=1.0, num_episodes=num_episodes, target_replace_freq=1, batch_size=32, gamma=0.95, replay_buffer=100000)
-        # evaluate_net_2, pi_2, value_function_2, log_2 = agent_2.DQN()
-        # return_multiple_runs_no_target[i,:] = log_2['G']
+    #     # agent_2 = DQN_agent(env=env, learning_rate=0.00025, epsilon=1.0, num_episodes=num_episodes, target_replace_freq=1, batch_size=32, gamma=0.95, replay_buffer=100000)
+    #     # evaluate_net_2, pi_2, value_function_2, log_2 = agent_2.DQN()
+    #     # return_multiple_runs_no_target[i,:] = log_2['G']
 
-        # agent_3 = DQN_agent(env=env, learning_rate=0.00025, epsilon=1.0, num_episodes=num_episodes, target_replace_freq=2000, batch_size=32, gamma=0.95, replay_buffer=32)
-        # evaluate_net_3, pi_3, value_function_3, log_3 = agent_3.DQN()
-        # return_multiple_runs_no_replay[i,:] = log_3['G']
+    #     # agent_3 = DQN_agent(env=env, learning_rate=0.00025, epsilon=1.0, num_episodes=num_episodes, target_replace_freq=2000, batch_size=32, gamma=0.95, replay_buffer=32)
+    #     # evaluate_net_3, pi_3, value_function_3, log_3 = agent_3.DQN()
+    #     # return_multiple_runs_no_replay[i,:] = log_3['G']
 
-        # agent_4 = DQN_agent(env=env, learning_rate=0.00025, epsilon=1.0, num_episodes=num_episodes, target_replace_freq=1, batch_size=32, gamma=0.95, replay_buffer=32)
-        # evaluate_net_4, pi_4, value_function_4, log_4 = agent_4.DQN()
-        # return_multiple_runs_standard[i,:] = log_4['G']
-    # s = env.reset()
-    # print(pi(s))
-    print(return_multiple_runs_standard)
-    # s = env.reset()
-    # log['s'].append(s)
-    # done = False
-    # while not done:
-    #     a = pi(s)
-    #     (s,r,done) = env.step(a)
-    #     log['t'].append(log['t'][-1] + 1)
-    #     log['s'].append(s)
-    #     log['a'].append(a)
-    #     log['r'].append(r)
+    #     # agent_4 = DQN_agent(env=env, learning_rate=0.00025, epsilon=1.0, num_episodes=num_episodes, target_replace_freq=1, batch_size=32, gamma=0.95, replay_buffer=32)
+    #     # evaluate_net_4, pi_4, value_function_4, log_4 = agent_4.DQN()
+    #     # return_multiple_runs_standard[i,:] = log_4['G']
+    # # s = env.reset()
+    # # print(pi(s))
+    # print(return_multiple_runs_standard)
+    s = env.reset()
+    log['s'].append(s)
+    done = False
+    while not done:
+        a = pi(s)
+        (s,r,done) = env.step(a)
+        log['t'].append(log['t'][-1] + 1)
+        log['s'].append(s)
+        log['a'].append(a)
+        log['r'].append(r)
 
-    # log['s'] = np.array(log['s'])
-    # theta = log['s'][:,0]
-    # print(theta)
-    # thetadot = log['s'][:,1]
-    # tau = [env._a_to_u(a) for a in log['a']]
-    # fig, ax = plt.subplots(3, 1, figsize=(10, 10))
-    # ax[0].plot(log['t'], theta, label='theta')
-    # ax[0].plot(log['t'], thetadot, label='thetadot')
-    # ax[0].axhline(y=np.pi, color='r', linestyle='-', label='Theta = pi')
-    # ax[0].axhline(y=-np.pi, color='r', linestyle='-', label='Theta = -pi')
-    # ax[0].axhline(y = 0, color = 'r', linestyle='--', label='Theta = 0')
-    # ax[0].legend()
-    # ax[1].plot(log['t'][:-1], tau, label='tau')
-    # ax[1].legend()
-    # ax[2].plot(log['t'][:-1], log['r'], label='r')
-    # ax[2].legend()
-    # ax[2].set_xlabel('time step')
-    # plt.tight_layout()
-    # plt.savefig('figures/test_discreteaction_pendulum.png')
+    log['s'] = np.array(log['s'])
+    theta = log['s'][:,0]
+    print(theta)
+    thetadot = log['s'][:,1]
+    tau = [env._a_to_u(a) for a in log['a']]
+    fig, ax = plt.subplots(3, 1, figsize=(10, 10))
+    ax[0].plot(log['t'], theta, label='theta')
+    ax[0].plot(log['t'], thetadot, label='thetadot')
+    ax[0].axhline(y=np.pi, color='r', linestyle='-', label='Theta = pi')
+    ax[0].axhline(y=-np.pi, color='r', linestyle='-', label='Theta = -pi')
+    ax[0].axhline(y=0.1*np.pi, color='g', linestyle='--', label='Theta = 0.1*pi')
+    ax[0].axhline(y=-0.1*np.pi, color='g', linestyle='--', label='Theta = -0.1*pi')
+    ax[0].axhline(y = 0, color = 'r', linestyle='--', label='Theta = 0')
+    ax[0].legend()
+    ax[1].plot(log['t'][:-1], tau, label='tau')
+    ax[1].legend()
+    ax[2].plot(log['t'][:-1], log['r'], label='r')
+    ax[2].legend()
+    ax[2].set_xlabel('time step')
+    plt.tight_layout()
+    plt.savefig('figures/test_discreteaction_pendulum.png')
 
-    # plt.figure()
-    # plt.plot(log['episodes'], log['G'])
-    # plt.ylabel('Return')
-    # plt.xlabel('Episodes')
-    # plt.title('Learning Curve')
-    # plt.savefig('figures/learning_curve.png')
+    plt.figure()
+    plt.plot(log['episodes'], log['G'])
+    plt.ylabel('Return')
+    plt.xlabel('Episodes')
+    plt.title('Learning Curve')
+    plt.savefig('figures/learning_curve.png')
 
-    # plt.figure()
-    # plt.contourf(theta_array, thetadot_array, pi_array)
-    # # plt.scatter(theta, thetadot, c = [pi(s) for s in log['s']])
-    # plt.colorbar()
-    # plt.xlabel(r"$\theta$")
-    # plt.ylabel(r"$\dot{\theta}$")
-    # plt.title("Plot of Optimal Policy")
-    # plt.savefig('figures/policy.png')
+    plt.figure()
+    plt.contourf(theta_array, thetadot_array, pi_array)
+    # plt.scatter(theta, thetadot, c = [pi(s) for s in log['s']])
+    plt.colorbar()
+    plt.xlabel(r"$\theta$")
+    plt.ylabel(r"$\dot{\theta}$")
+    plt.title("Plot of Optimal Policy")
+    plt.savefig('figures/policy.png')
 
-    # plt.figure()
-    # plt.contourf(theta_array, thetadot_array, value_array)
-    # # plt.scatter(theta, thetadot, c = [value_function(s) for s in log['s']])
-    # plt.colorbar()
-    # plt.xlabel(r"$\theta$")
-    # plt.ylabel(r"$\dot{\theta}$")
-    # plt.title("Plot of Value Function")
-    # plt.savefig('figures/value_function.png')
+    plt.figure()
+    plt.contourf(theta_array, thetadot_array, value_array)
+    # plt.scatter(theta, thetadot, c = [value_function(s) for s in log['s']])
+    plt.colorbar()
+    plt.xlabel(r"$\theta$")
+    plt.ylabel(r"$\dot{\theta}$")
+    plt.title("Plot of Value Function")
+    plt.savefig('figures/value_function.png')
 
-    # env.video(pi, filename='figures/optimal_discreteaction_pendulum.gif')
+    env.video(pi, filename='figures/optimal_discreteaction_pendulum.gif')
 
 
 if __name__ == "__main__":
