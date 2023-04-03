@@ -5,7 +5,6 @@ import discreteaction_pendulum
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchsummary import summary
 from collections import deque
 
 
@@ -42,7 +41,7 @@ class DQN_agent:
         self.num_episodes = num_episodes
         self.gamma = gamma
         self.loss = torch.nn.MSELoss()
-        self.optimizer = optim.RMSprop(self.evaluate_net.parameters(), lr=learning_rate, alpha=0.95, eps=0.01, momentum=0.95)
+        self.optimizer = optim.RMSprop(self.evaluate_net.parameters(), lr=learning_rate)
         self.replay_buffer = replay_buffer
         #memory is defined using a deque for efficient replacement of experiences when memory is full
         self.memory = deque(maxlen = self.replay_buffer) #each element of the memory is [s,a,r,s',done]
@@ -108,7 +107,7 @@ class DQN_agent:
             self.optimizer.step()
 
         if self.epsilon > self.epsilon_min:
-            self.epsilon -= (self.epsilon_initial - self.epsilon_min)/18000
+            self.epsilon -= (self.epsilon_initial - self.epsilon_min)/10000
         else:
             self.epsilon = self.epsilon_min
 
@@ -149,7 +148,7 @@ class DQN_agent:
                     evaluate_net = self.evaluate_net
                     eval_output = self.evaluate_net(s)[a]
                     q_values = self.target_net(s_new).detach()
-                    target_output = r + self.gamma*(q_values.max(0)[0])
+                    target_output = r + (1-done)*self.gamma*(q_values.max(0)[0])
                     loss = self.loss(eval_output, target_output)
 
                     self.optimizer.zero_grad()
@@ -158,8 +157,11 @@ class DQN_agent:
                     for para in self.evaluate_net.parameters():
                         para.grad.data.clamp_(-1,1)
                     self.optimizer.step()
+
                     if self.epsilon > self.epsilon_min:
-                        self.epsilon -= (self.epsilon_initial - self.epsilon_min)/18000
+                        self.epsilon -= (self.epsilon_initial - self.epsilon_min)/10000
+                    else:
+                        self.epsilon = self.epsilon_min
 
                 s = s_new
         
@@ -175,12 +177,14 @@ def main():
     env = discreteaction_pendulum.Pendulum()
     
     num_runs = 10
-    num_episodes = 200
+    num_episodes = 150
     return_multiple_runs_standard = np.zeros((num_runs,num_episodes))
     return_multiple_runs_no_target = np.zeros((num_runs,num_episodes))
     return_multiple_runs_no_replay = np.zeros((num_runs,num_episodes))
     return_multiple_runs_no_replay_no_target = np.zeros((num_runs,num_episodes))
     for i in range(num_runs):
+        print(f"Starting run number {i+1}")
+        print("-----------------------")
         print("Standard DQN")
         print("-----------------------")
         agent_1 = DQN_agent(env=env, learning_rate=0.00025, epsilon=1.0, num_episodes=num_episodes, target_replace_freq=1000, batch_size=32, replay_buffer=100000)
@@ -211,11 +215,12 @@ def main():
     # conf_int_no_replay_no_target = 1.96*np.std(return_multiple_runs_no_replay_no_target, axis=0)/np.sqrt(num_episodes)
     episode_array = log_1['episodes']
 
+#Plotting learning curve for ablation study
     plt.figure()
     plt.plot(episode_array, np.mean(return_multiple_runs_standard, axis=0), color='b', label='Average Return')
     plt.plot(episode_array, np.mean(return_multiple_runs_no_target, axis=0), color='r', label='Average Return (no target)')
     plt.plot(episode_array, np.mean(return_multiple_runs_no_replay, axis=0), color='g', label='Average Return (no replay)')
-    plt.plot(episode_array, np.mean(return_multiple_runs_no_replay_no_target, axis=0), color='c', label='Average Return (no replay, no target)')
+    plt.plot(episode_array, np.mean(return_multiple_runs_no_replay_no_target, axis=0), color='orange', label='Average Return (no replay, no target)')
     plt.fill_between(episode_array, (np.mean(return_multiple_runs_standard, axis=0)-np.std(return_multiple_runs_standard, axis=0)), (np.mean(return_multiple_runs_standard, axis=0)+np.std(return_multiple_runs_standard, axis=0)), color='b', alpha=.2)
     plt.fill_between(episode_array, (np.mean(return_multiple_runs_no_target, axis=0)-np.std(return_multiple_runs_no_target, axis=0)), (np.mean(return_multiple_runs_no_target, axis=0)+np.std(return_multiple_runs_no_target, axis=0)), color='r', alpha=.2)
     plt.fill_between(episode_array, (np.mean(return_multiple_runs_no_replay, axis=0)-np.std(return_multiple_runs_no_replay, axis=0)), (np.mean(return_multiple_runs_no_replay, axis=0)+np.std(return_multiple_runs_no_replay, axis=0)), color='g', alpha=.2)
@@ -225,18 +230,9 @@ def main():
     plt.xlabel('Epsiodes')
     plt.ylabel('Return')
     plt.title('Ablation Study')
-    plt.savefig('figures/ablation_study.png')
+    plt.savefig('figures/ablation_study_2.png')
 
-    theta = np.linspace(-np.pi, np.pi, 500)
-    thetadot = np.linspace(-15,15,500)
-    theta_array, thetadot_array = np.meshgrid(theta, thetadot)
-    pi_array = np.zeros_like(theta_array)
-    value_array = np.zeros_like(theta_array)
-    for i in range(len(theta)):
-        for j in range(len(thetadot)):
-            s = np.array((theta_array[i,j],thetadot_array[i,j]))
-            pi_array[i,j] = pi_1(s)
-            value_array[i,j] = value_function_1(s)
+#Plotting Trajectories for all four variants of DQN 
     s = env.reset()
     log_1['s'].append(s)
     done = False
@@ -249,51 +245,251 @@ def main():
         log_1['r'].append(r)
 
     log_1['s'] = np.array(log_1['s'])
-    theta = log_1['s'][:,0]
-    thetadot = log_1['s'][:,1]
-    tau = [env._a_to_u(a) for a in log_1['a']]
-    fig, ax = plt.subplots(3, 1, figsize=(10, 10))
-    ax[0].plot(log_1['t'], theta, label=r'$\theta$')
-    ax[0].plot(log_1['t'], thetadot, label=r'$\dot{\theta}$')
-    ax[0].axhline(y=np.pi, color='r', linestyle='-', label=r'$\theta = \pm\pi$')
-    ax[0].axhline(y=-np.pi, color='r', linestyle='-')
-    ax[0].axhline(y=0.1*np.pi, color='g', linestyle='--', label=r'$\theta = \pm 0.1*\pi$')
-    ax[0].axhline(y=-0.1*np.pi, color='g', linestyle='--')
-    ax[0].axhline(y = 0, color = 'r', linestyle='--', label=r'$\theta = 0$')
-    ax[0].legend()
-    ax[1].plot(log_1['t'][:-1], tau, label='tau')
-    ax[1].legend()
-    ax[2].plot(log_1['t'][:-1], log_1['r'], label='r')
-    ax[2].legend()
-    ax[2].set_xlabel('time step')
+    theta1 = log_1['s'][:,0]
+    thetadot1 = log_1['s'][:,1]
+    tau1 = [env._a_to_u(a) for a in log_1['a']]
+    fig1, ax1 = plt.subplots(3, 1, figsize=(10, 10))
+    ax1[0].plot(log_1['t'], theta1, label=r'$\theta$')
+    ax1[0].plot(log_1['t'], thetadot1, label=r'$\dot{\theta}$')
+    ax1[0].axhline(y=np.pi, color='r', linestyle='-', label=r'$\theta = \pm\pi$')
+    ax1[0].axhline(y=-np.pi, color='r', linestyle='-')
+    ax1[0].axhline(y=0.1*np.pi, color='g', linestyle='--', label=r'$\theta = \pm 0.1*\pi$')
+    ax1[0].axhline(y=-0.1*np.pi, color='g', linestyle='--')
+    ax1[0].axhline(y = 0, color = 'r', linestyle='--', label=r'$\theta = 0$')
+    ax1[0].legend()
+    ax1[1].plot(log_1['t'][:-1], tau1, label='tau')
+    ax1[1].legend()
+    ax1[2].plot(log_1['t'][:-1], log_1['r'], label='r')
+    ax1[2].legend()
+    ax1[2].set_xlabel('time step')
     plt.tight_layout()
-    plt.savefig('figures/trajectory_pendulum.png')
+    plt.savefig('figures/trajectory_pendulum_standard.png')
 
+    s = env.reset()
+    log_2['s'].append(s)
+    done = False
+    while not done:
+        a = pi_2(s)
+        (s,r,done) = env.step(a)
+        log_2['t'].append(log_2['t'][-1] + 1)
+        log_2['s'].append(s)
+        log_2['a'].append(a)
+        log_2['r'].append(r)
+
+    log_2['s'] = np.array(log_2['s'])
+    theta2 = log_2['s'][:,0]
+    thetadot2 = log_2['s'][:,1]
+    tau2 = [env._a_to_u(a) for a in log_2['a']]
+    fig1, ax1 = plt.subplots(3, 1, figsize=(10, 10))
+    ax1[0].plot(log_2['t'], theta2, label=r'$\theta$')
+    ax1[0].plot(log_2['t'], thetadot2, label=r'$\dot{\theta}$')
+    ax1[0].axhline(y=np.pi, color='r', linestyle='-', label=r'$\theta = \pm\pi$')
+    ax1[0].axhline(y=-np.pi, color='r', linestyle='-')
+    ax1[0].axhline(y=0.1*np.pi, color='g', linestyle='--', label=r'$\theta = \pm 0.1*\pi$')
+    ax1[0].axhline(y=-0.1*np.pi, color='g', linestyle='--')
+    ax1[0].axhline(y = 0, color = 'r', linestyle='--', label=r'$\theta = 0$')
+    ax1[0].legend()
+    ax1[1].plot(log_2['t'][:-1], tau2, label='tau')
+    ax1[1].legend()
+    ax1[2].plot(log_2['t'][:-1], log_2['r'], label='r')
+    ax1[2].legend()
+    ax1[2].set_xlabel('time step')
+    plt.tight_layout()
+    plt.savefig('figures/trajectory_pendulum_no_target.png')
+
+    s = env.reset()
+    log_3['s'].append(s)
+    done = False
+    while not done:
+        a = pi_3(s)
+        (s,r,done) = env.step(a)
+        log_3['t'].append(log_3['t'][-1] + 1)
+        log_3['s'].append(s)
+        log_3['a'].append(a)
+        log_3['r'].append(r)
+    log_3['s'] = np.array(log_3['s'])
+    theta3 = log_3['s'][:,0]
+    thetadot3 = log_3['s'][:,1]
+    tau3 = [env._a_to_u(a) for a in log_3['a']]
+    fig1, ax1 = plt.subplots(3, 1, figsize=(10, 10))
+    ax1[0].plot(log_3['t'], theta3, label=r'$\theta$')
+    ax1[0].plot(log_3['t'], thetadot3, label=r'$\dot{\theta}$')
+    ax1[0].axhline(y=np.pi, color='r', linestyle='-', label=r'$\theta = \pm\pi$')
+    ax1[0].axhline(y=-np.pi, color='r', linestyle='-')
+    ax1[0].axhline(y=0.1*np.pi, color='g', linestyle='--', label=r'$\theta = \pm 0.1*\pi$')
+    ax1[0].axhline(y=-0.1*np.pi, color='g', linestyle='--')
+    ax1[0].axhline(y = 0, color = 'r', linestyle='--', label=r'$\theta = 0$')
+    ax1[0].legend()
+    ax1[1].plot(log_3['t'][:-1], tau3, label='tau')
+    ax1[1].legend()
+    ax1[2].plot(log_3['t'][:-1], log_3['r'], label='r')
+    ax1[2].legend()
+    ax1[2].set_xlabel('time step')
+    plt.tight_layout()
+    plt.savefig('figures/trajectory_pendulum_no_replay.png')
+
+    s = env.reset()
+    log_4['s'].append(s)
+    done = False
+    while not done:
+        a = pi_4(s)
+        (s,r,done) = env.step(a)
+        log_4['t'].append(log_4['t'][-1] + 1)
+        log_4['s'].append(s)
+        log_4['a'].append(a)
+        log_4['r'].append(r)
+    log_4['s'] = np.array(log_4['s'])
+    theta4 = log_4['s'][:,0]
+    thetadot4 = log_4['s'][:,1]
+    tau4 = [env._a_to_u(a) for a in log_4['a']]
+    fig1, ax1 = plt.subplots(3, 1, figsize=(10, 10))
+    ax1[0].plot(log_4['t'], theta4, label=r'$\theta$')
+    ax1[0].plot(log_4['t'], thetadot4, label=r'$\dot{\theta}$')
+    ax1[0].axhline(y=np.pi, color='r', linestyle='-', label=r'$\theta = \pm\pi$')
+    ax1[0].axhline(y=-np.pi, color='r', linestyle='-')
+    ax1[0].axhline(y=0.1*np.pi, color='g', linestyle='--', label=r'$\theta = \pm 0.1*\pi$')
+    ax1[0].axhline(y=-0.1*np.pi, color='g', linestyle='--')
+    ax1[0].axhline(y = 0, color = 'r', linestyle='--', label=r'$\theta = 0$')
+    ax1[0].legend()
+    ax1[1].plot(log_4['t'][:-1], tau4, label='tau')
+    ax1[1].legend()
+    ax1[2].plot(log_4['t'][:-1], log_4['r'], label='r')
+    ax1[2].legend()
+    ax1[2].set_xlabel('time step')
+    plt.tight_layout()
+    plt.savefig('figures/trajectory_pendulum_no_replay_no_target.png')
+
+#Plotting Learning curves for all four DQN variants
     plt.figure()
-    plt.plot(episode_array, np.mean(return_multiple_runs_standard, axis=0), color='b', label='Average Return')
-    plt.fill_between(episode_array, (np.mean(return_multiple_runs_standard, axis=0)-np.std(return_multiple_runs_standard, axis=0)), (np.mean(return_multiple_runs_standard, axis=0)+np.std(return_multiple_runs_standard, axis=0)), color='b', alpha=.2, label='95% Confidence Interval')
+    plt.plot(episode_array, np.mean(return_multiple_runs_standard, axis=0), color='b', label='Mean Return')
+    plt.fill_between(episode_array, (np.mean(return_multiple_runs_standard, axis=0)-np.std(return_multiple_runs_standard, axis=0)), (np.mean(return_multiple_runs_standard, axis=0)+np.std(return_multiple_runs_standard, axis=0)), color='b', alpha=.2, label=r'1-$\sigma$ Error')
     plt.ylabel('Return')
     plt.xlabel('Episodes')
     plt.title('Learning Curve for Standard DQN')
-    plt.savefig('figures/learning_curve.png')
+    plt.ylim(0,30)
+    plt.legend()
+    plt.savefig('figures/learning_curve_standard_DQN.png')
 
     plt.figure()
-    plt.contourf(theta_array, thetadot_array, pi_array, levels=30)
+    plt.plot(episode_array, np.mean(return_multiple_runs_no_target, axis=0), color='b', label='Mean Return')
+    plt.fill_between(episode_array, (np.mean(return_multiple_runs_no_target, axis=0)-np.std(return_multiple_runs_no_target, axis=0)), (np.mean(return_multiple_runs_no_target, axis=0)+np.std(return_multiple_runs_no_target, axis=0)), color='b', alpha=.2, label=r'1-$\sigma$ Error')
+    plt.ylabel('Return')
+    plt.xlabel('Episodes')
+    plt.title('Learning Curve for DQN : No Target')
+    plt.legend()
+    plt.savefig('figures/learning_curve_no_target_DQN.png')
+
+    plt.figure()
+    plt.plot(episode_array, np.mean(return_multiple_runs_no_replay, axis=0), color='b', label='Mean Return')
+    plt.fill_between(episode_array, (np.mean(return_multiple_runs_no_replay, axis=0)-np.std(return_multiple_runs_no_replay, axis=0)), (np.mean(return_multiple_runs_no_replay, axis=0)+np.std(return_multiple_runs_no_replay, axis=0)), color='b', alpha=.2, label=r'1-$\sigma$ Error')
+    plt.ylabel('Return')
+    plt.xlabel('Episodes')
+    plt.title('Learning Curve for DQN : No Replay')
+    plt.legend()
+    plt.savefig('figures/learning_curve_no_replay_DQN.png')
+
+    plt.figure()
+    plt.plot(episode_array, np.mean(return_multiple_runs_no_replay_no_target, axis=0), color='b', label='Mean Return')
+    plt.fill_between(episode_array, (np.mean(return_multiple_runs_no_replay_no_target, axis=0)-np.std(return_multiple_runs_no_replay_no_target, axis=0)), (np.mean(return_multiple_runs_no_replay_no_target, axis=0)+np.std(return_multiple_runs_no_replay_no_target, axis=0)), color='b', alpha=.2, label=r'1-$\sigma$ Error')
+    plt.ylabel('Return')
+    plt.xlabel('Episodes')
+    plt.title('Learning Curve for DQN : No Replay and Target')
+    plt.legend()
+    plt.savefig('figures/learning_curve_no_replay__no_target_DQN.png')
+
+#Plotting Optimal Policy and Value Functions for all four DQN variants
+    theta_vals = np.linspace(-np.pi, np.pi, 500)
+    thetadot_vals = np.linspace(-15,15,500)
+    theta_array, thetadot_array = np.meshgrid(theta_vals, thetadot_vals)
+    pi_array_standard = np.zeros_like(theta_array)
+    value_array_standard = np.zeros_like(theta_array)
+    pi_array_no_target = np.zeros_like(theta_array)
+    value_array_no_target = np.zeros_like(theta_array)
+    pi_array_no_replay = np.zeros_like(theta_array)
+    value_array_no_replay = np.zeros_like(theta_array)
+    pi_array_no_replay_no_target = np.zeros_like(theta_array)
+    value_array_no_replay_no_target = np.zeros_like(theta_array)
+    for i in range(len(theta_vals)):
+        for j in range(len(thetadot_vals)):
+            s = np.array((theta_array[i,j],thetadot_array[i,j]))
+            pi_array_standard[i,j] = pi_1(s)
+            value_array_standard[i,j] = value_function_1(s)
+            pi_array_no_target[i,j] = pi_2(s)
+            value_array_no_target[i,j] = value_function_2(s)
+            pi_array_no_replay[i,j] = pi_3(s)
+            value_array_no_replay[i,j] = value_function_3(s)
+            pi_array_no_replay_no_target[i,j] = pi_4(s)
+            value_array_no_replay_no_target[i,j] = value_function_4(s)
+    
+    plt.figure()
+    plt.contourf(theta_array, thetadot_array, pi_array_standard, levels=30)
     plt.colorbar()
     plt.xlabel(r"$\theta$")
     plt.ylabel(r"$\dot{\theta}$")
     plt.title("Plot of Optimal Policy for Standard DQN")
-    plt.savefig('figures/policy.png')
+    plt.savefig('figures/policy_standard.png')
 
     plt.figure()
-    plt.contourf(theta_array, thetadot_array, value_array, levels=30)
+    plt.contourf(theta_array, thetadot_array, value_array_standard, levels=30)
     plt.colorbar()
     plt.xlabel(r"$\theta$")
     plt.ylabel(r"$\dot{\theta}$")
     plt.title("Plot of Value Function for Standard DQN")
-    plt.savefig('figures/value_function.png')
+    plt.savefig('figures/value_function_standard.png')
 
-    env.video(pi_1, filename='figures/optimal_discreteaction_pendulum.gif')
+    plt.figure()
+    plt.contourf(theta_array, thetadot_array, pi_array_no_target, levels=30)
+    plt.colorbar()
+    plt.xlabel(r"$\theta$")
+    plt.ylabel(r"$\dot{\theta}$")
+    plt.title("Plot of Optimal Policy for DQN : No Target")
+    plt.savefig('figures/policy_no_target.png')
+
+    plt.figure()
+    plt.contourf(theta_array, thetadot_array, value_array_no_target, levels=30)
+    plt.colorbar()
+    plt.xlabel(r"$\theta$")
+    plt.ylabel(r"$\dot{\theta}$")
+    plt.title("Plot of Value Function for DQN : No Target")
+    plt.savefig('figures/value_function_no_target.png')
+
+    plt.figure()
+    plt.contourf(theta_array, thetadot_array, pi_array_no_replay, levels=30)
+    plt.colorbar()
+    plt.xlabel(r"$\theta$")
+    plt.ylabel(r"$\dot{\theta}$")
+    plt.title("Plot of Optimal Policy for DQN : No Replay")
+    plt.savefig('figures/policy_no_replay.png')
+
+    plt.figure()
+    plt.contourf(theta_array, thetadot_array, value_array_no_replay, levels=30)
+    plt.colorbar()
+    plt.xlabel(r"$\theta$")
+    plt.ylabel(r"$\dot{\theta}$")
+    plt.title("Plot of Value Function for DQN : No Replay")
+    plt.savefig('figures/value_function_no_replay.png')
+
+    plt.figure()
+    plt.contourf(theta_array, thetadot_array, pi_array_no_replay_no_target, levels=30)
+    plt.colorbar()
+    plt.xlabel(r"$\theta$")
+    plt.ylabel(r"$\dot{\theta}$")
+    plt.title("Plot of Optimal Policy for DQN : No Replay and Target")
+    plt.savefig('figures/policy_no_replay_no_target.png')
+
+    plt.figure()
+    plt.contourf(theta_array, thetadot_array, value_array_no_replay_no_target, levels=30)
+    plt.colorbar()
+    plt.xlabel(r"$\theta$")
+    plt.ylabel(r"$\dot{\theta}$")
+    plt.title("Plot of Value Function for DQN : No Replay and Target")
+    plt.savefig('figures/value_function_no_replay_no_target.png')
+
+#Generating animation corresponding to trained agent for all four DQN variants
+    env.video(pi_1, filename='figures/optimal_discreteaction_pendulum_standard_DQN.gif')
+    env.video(pi_2, filename='figures/optimal_discreteaction_pendulum_DQN_no_target.gif')
+    env.video(pi_3, filename='figures/optimal_discreteaction_pendulum_DQN_no_replay.gif')
+    env.video(pi_4, filename='figures/optimal_discreteaction_pendulum_DQN_no_replay_no_target.gif')
 
 
 if __name__ == "__main__":
